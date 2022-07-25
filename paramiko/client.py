@@ -30,7 +30,7 @@ from errno import ECONNREFUSED, EHOSTUNREACH
 
 from paramiko.agent import Agent
 from paramiko.common import DEBUG
-from paramiko.config import SSH_PORT
+from paramiko.config import SSH_PORT, SSHConfig
 from paramiko.dsskey import DSSKey
 from paramiko.ecdsakey import ECDSAKey
 from paramiko.ed25519key import Ed25519Key
@@ -191,17 +191,55 @@ class SSHClient(ClosingContextManager):
             policy = policy()
         self._policy = policy
 
-    def _families_and_addresses(self, hostname, port):
+    def _get_address_family(self, hostname, address_family=None):
+        """
+        Check if an address family was passed as a parameter. If not then check
+        the ssh config. If neither is set then use all families.
+
+        :param str hostname: the server to connect to
+        :param str address_family: (optional) specifies which address family to
+            use when connecting. Valid arguments are 'inet' and 'inet6'
+            any other values will try to use both
+        :returns: Yields a socket family object like ``socket.AF_INET``
+        """
+        config = SSHConfig.from_path(os.path.expanduser("~/.ssh/config"))
+        host_config = config.lookup(hostname)
+        print(host_config)
+
+        if address_family:
+            if address_family == 'inet':
+                address_family = socket.AF_INET
+            elif address_family == 'inet6':
+                address_family = socket.AF_INET6
+            else:
+                address_family = socket.AF_UNSPEC
+        elif 'addressfamily' in host_config:
+            if host_config['addressfamily'] == 'inet':
+                address_family = socket.AF_INET
+            elif host_config['addressfamily'] == 'inet6':
+                address_family = socket.AF_INET6
+            else:
+                address_family = socket.AF_UNSPEC
+        else:
+            address_family = socket.AF_UNSPEC
+
+        return address_family
+
+    def _families_and_addresses(self, hostname, port, address_family=None):
         """
         Yield pairs of address families and addresses to try for connecting.
 
         :param str hostname: the server to connect to
         :param int port: the server port to connect to
+        :param str address_family: (optional) specifies which address family to
+            use when connecting. Valid arguments are 'inet' and 'inet6'
+            any other values will try to use both
         :returns: Yields an iterable of ``(family, address)`` tuples
         """
+        address_family = self._get_address_family(hostname, address_family)
         guess = True
         addrinfos = socket.getaddrinfo(
-            hostname, port, socket.AF_UNSPEC, socket.SOCK_STREAM
+            hostname, port, address_family, socket.SOCK_STREAM
         )
         for (family, socktype, proto, canonname, sockaddr) in addrinfos:
             if socktype == socket.SOCK_STREAM:
@@ -237,6 +275,7 @@ class SSHClient(ClosingContextManager):
         gss_trust_dns=True,
         passphrase=None,
         disabled_algorithms=None,
+        address_family=None,
     ):
         """
         Connect to an SSH server and authenticate to it.  The server's host key
@@ -314,6 +353,9 @@ class SSHClient(ClosingContextManager):
         :param dict disabled_algorithms:
             an optional dict passed directly to `.Transport` and its keyword
             argument of the same name.
+        :param str address_family: An optional string that specifies which address
+            family to use when connecting. Valid arguments are 'inet' and 'inet6'
+            any other values will try to use both
 
         :raises:
             `.BadHostKeyException` -- if the server's host key could not be
@@ -337,7 +379,7 @@ class SSHClient(ClosingContextManager):
         if not sock:
             errors = {}
             # Try multiple possible address families (e.g. IPv4 vs IPv6)
-            to_try = list(self._families_and_addresses(hostname, port))
+            to_try = list(self._families_and_addresses(hostname, port, address_family))
             for af, addr in to_try:
                 try:
                     sock = socket.socket(af, socket.SOCK_STREAM)
